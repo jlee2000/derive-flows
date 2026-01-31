@@ -12,6 +12,7 @@ Unusual out-of-the-money (OTM) options flow may predict future spot price return
 |--------|-------|
 | Source | Derive Telegram feed + Hyperliquid spot prices |
 | Date range | Dec 4, 2025 → Jan 31, 2026 (59 days) |
+| ETH period return | -25.46% ($3,187 → $2,376) |
 | Total trades | 7,314 |
 | OTM trades | 5,920 |
 | Unusual signals | 87 |
@@ -100,7 +101,7 @@ Statistically significant results (p < 0.05):
 
 ## Key Findings
 
-- **ETH unusual call flow is contrarian:** 72h bearish signal with p=0.016
+- **ETH unusual call flow is contrarian:** 72h bearish signal (p=0.016), underperforms baseline by -2.32% even after accounting for bear market
 - **64.5% of signals cluster:** 31 raw signals → 11 independent windows
 - **Robustness:** Signal survives leave-3-out and threshold sensitivity tests
 - **Not tradeable:** 95% bootstrap CI includes zero; insufficient sample size for confidence
@@ -114,6 +115,7 @@ Statistically significant results (p < 0.05):
 3. **Small sample after filtering:** 31 ETH call signals → 11 independent windows
 4. **Asset coverage:** BTC and HYPE have insufficient signals for robust inference
 5. **No order book context:** Strike selection may be liquidity-driven, not directional
+6. **Bear market period:** ETH declined -25.46% during the analysis window. While the signal underperforms the random baseline (-2.83% vs -0.51%, p=0.01), this was a persistent downtrend. The finding may not generalize to bull markets or ranging conditions.
 
 ## Future Work
 
