@@ -1,6 +1,8 @@
 # Claude Instructions: derive-flows
 
-This document provides instructions for running and modifying the Telegram trade message ingestion pipeline.
+This document provides instructions for running and modifying the derive-flows data pipeline, which consists of:
+1. **Trade Ingestion** - Fetch option trade messages from Telegram
+2. **Price Data** - Fetch historical OHLCV prices from Hyperliquid API
 
 ## Quick Start: Historical Ingestion
 
@@ -63,6 +65,105 @@ df = asyncio.run(load_trades())
 
 ---
 
+## Quick Start: Price Data
+
+Fetch historical hourly OHLCV prices from Hyperliquid for ETH, BTC, and HYPE.
+
+### Prerequisites
+
+1. **Python 3.10+** with pip
+2. **Dependencies:** `pip install aiohttp pyarrow pandas`
+
+### Run Price Fetcher
+
+```bash
+python scripts/fetch_hyperliquid_prices.py
+```
+
+### Output
+
+```
+data/prices/
+├── eth_hourly_prices.parquet
+├── btc_hourly_prices.parquet
+└── hype_hourly_prices.parquet
+```
+
+Each parquet file contains:
+| Column | Type | Description |
+|--------|------|-------------|
+| `timestamp` | datetime64[ns, UTC] | Candle open time |
+| `open` | float64 | Opening price |
+| `high` | float64 | High price |
+| `low` | float64 | Low price |
+| `close` | float64 | Closing price |
+| `volume` | float64 | Trading volume |
+| `trades` | int64 | Number of trades |
+
+### Loading Price Data
+
+```python
+import pandas as pd
+
+# Load single asset
+eth = pd.read_parquet("data/prices/eth_hourly_prices.parquet")
+
+# Load all assets
+prices = {
+    asset: pd.read_parquet(f"data/prices/{asset}_hourly_prices.parquet")
+    for asset in ["eth", "btc", "hype"]
+}
+```
+
+---
+
+## Running the Full Pipeline
+
+To run both trade ingestion and price data fetching end-to-end:
+
+```bash
+# 1. Install dependencies
+pip install -e ".[dev]"
+pip install aiohttp pyarrow
+
+# 2. Configure Telegram credentials (see Quick Start: Historical Ingestion)
+cp .env.example .env
+# Edit .env with your credentials
+
+# 3. Fetch trade messages (first run requires interactive auth)
+derive-flows fetch -v
+
+# 4. Fetch price data
+python scripts/fetch_hyperliquid_prices.py
+
+# 5. Load and join data for analysis
+python -c "
+import asyncio
+import pandas as pd
+from derive_flows.storage import TradeStorage
+from derive_flows.enrichment import enrich_trades
+from pathlib import Path
+
+async def main():
+    storage = TradeStorage(Path('./data/trades.db'))
+    trades = await storage.to_dataframe()
+    trades = enrich_trades(trades)
+
+    prices = {
+        asset: pd.read_parquet(f'data/prices/{asset}_hourly_prices.parquet')
+        for asset in ['eth', 'btc', 'hype']
+    }
+
+    print(f'Trades: {len(trades)} rows')
+    for asset, df in prices.items():
+        print(f'{asset.upper()} prices: {len(df)} rows')
+
+asyncio.run(main())
+"
+```
+
+---
+
 ## Architecture Overview
 
 ```
@@ -79,9 +180,20 @@ src/derive_flows/
     ├── __init__.py
     ├── historical.py   # Backfill logic
     └── realtime.py     # Live streaming
+
+scripts/
+└── fetch_hyperliquid_prices.py   # Price data fetcher
+
+data/
+├── trades.db           # SQLite trade database (gitignored)
+├── telegram.session    # Telethon auth session (gitignored)
+└── prices/             # Parquet price files (gitignored)
+    ├── eth_hourly_prices.parquet
+    ├── btc_hourly_prices.parquet
+    └── hype_hourly_prices.parquet
 ```
 
-### Data Flow
+### Data Flow: Trade Ingestion
 
 ```
 Telegram Channel
@@ -100,6 +212,23 @@ Telegram Channel
        │
        ▼
    pandas DataFrame
+```
+
+### Data Flow: Price Data
+
+```
+Hyperliquid API
+       │
+       ▼
+fetch_hyperliquid_prices.py
+       │
+       ├─→ POST /info (candleSnapshot)
+       │
+       ▼
+   pandas DataFrame
+       │
+       ▼
+   .parquet files     data/prices/{asset}_hourly_prices.parquet
 ```
 
 ---
@@ -178,6 +307,59 @@ All I/O operations are async:
 - `telethon` for async Telegram API
 - CLI uses `asyncio.run()` to bridge sync entry points
 
+### 6. Price Fetcher (scripts/fetch_hyperliquid_prices.py)
+
+**Hyperliquid API endpoint:**
+```
+POST https://api.hyperliquid.xyz/info
+```
+
+**Request format:**
+```json
+{
+  "type": "candleSnapshot",
+  "req": {
+    "coin": "<coin>",
+    "interval": "1h",
+    "startTime": <epoch_ms>,
+    "endTime": <epoch_ms>
+  }
+}
+```
+
+**Asset identifiers:**
+| Asset | Coin Parameter | Market Type |
+|-------|----------------|-------------|
+| ETH | `"ETH"` | Perpetual |
+| BTC | `"BTC"` | Perpetual |
+| HYPE | `"@107"` | Spot (mainnet index) |
+
+**API response fields:**
+| Field | Description |
+|-------|-------------|
+| `t` | Open timestamp (milliseconds) |
+| `o` | Open price (string) |
+| `h` | High price (string) |
+| `l` | Low price (string) |
+| `c` | Close price (string) |
+| `v` | Volume (string) |
+| `n` | Trade count |
+
+**Key decisions:**
+- ETH/BTC use perpetual markets (more liquid, longer history)
+- HYPE uses spot index `@107` (mainnet-specific identifier)
+- All prices returned as strings, converted to float64
+- Timestamps converted to UTC datetime
+- 5000 candle limit per request (sufficient for ~208 days of hourly data)
+- Retry with 5s backoff on HTTP 429 (rate limit)
+- 0.5s pause between assets to avoid burst requests
+
+**Date range configuration:**
+```python
+START_DATE = datetime(2025, 12, 4, 0, 0, tzinfo=timezone.utc)
+END_DATE = datetime(2026, 2, 3, 0, 0, tzinfo=timezone.utc)
+```
+
 ---
 
 ## Common Modifications
@@ -207,6 +389,64 @@ All I/O operations are async:
 2. Add subparser in `main()` function
 3. Add dispatch in the try block
 
+### Adding a new asset to price fetcher
+
+1. Find the coin identifier:
+   - Perpetuals: Use symbol directly (e.g., `"SOL"`, `"DOGE"`)
+   - Spot tokens: Use index format `"@<index>"` (query Hyperliquid meta endpoint)
+2. Add to `ASSETS` dict in `scripts/fetch_hyperliquid_prices.py`:
+   ```python
+   ASSETS = {
+       "eth": "ETH",
+       "btc": "BTC",
+       "hype": "@107",
+       "sol": "SOL",  # Add new perpetual
+   }
+   ```
+3. Run script - new parquet file created automatically
+
+### Changing price date range
+
+Modify `START_DATE` and `END_DATE` in `scripts/fetch_hyperliquid_prices.py`:
+```python
+START_DATE = datetime(2025, 12, 4, 0, 0, tzinfo=timezone.utc)
+END_DATE = datetime(2026, 2, 3, 0, 0, tzinfo=timezone.utc)
+```
+
+**Constraints:**
+- Maximum 5000 candles per request (~208 days at 1h interval)
+- For longer ranges, implement chunked requests (not currently needed)
+
+### Changing price interval
+
+Modify the `interval` parameter in `fetch_candles()`:
+```python
+payload = {
+    "type": "candleSnapshot",
+    "req": {
+        "coin": coin,
+        "interval": "1h",  # Options: "1m", "5m", "15m", "1h", "4h", "1d"
+        ...
+    }
+}
+```
+
+**Note:** Smaller intervals hit 5000 candle limit sooner. For 1m candles, max range is ~3.5 days.
+
+### Finding Hyperliquid spot token indices
+
+Query the meta endpoint to find spot token indices:
+```python
+import requests
+
+resp = requests.post(
+    "https://api.hyperliquid.xyz/info",
+    json={"type": "spotMeta"}
+)
+tokens = resp.json()["tokens"]
+# Returns list of {"name": "HYPE", "index": 107, ...}
+```
+
 ---
 
 ## Testing
@@ -235,7 +475,9 @@ Test files:
 | `.env` | Credentials (gitignored) |
 | `.env.example` | Template for credentials |
 | `data/telegram.session` | Telethon auth session (gitignored) |
-| `data/trades.db` | SQLite database (gitignored) |
+| `data/trades.db` | SQLite trade database (gitignored) |
+| `data/prices/*.parquet` | Hourly price data (gitignored) |
+| `scripts/fetch_hyperliquid_prices.py` | Price data fetcher script |
 
 ---
 
@@ -252,3 +494,19 @@ Check message format against `TRADE_PATTERN`. Use verbose flag to see which mess
 
 ### Duplicate trades
 Not an issue - `INSERT OR REPLACE` with `message_id` primary key handles deduplication automatically.
+
+### Price fetcher: "No data returned"
+- Check coin identifier is valid (perpetuals use symbol, spot uses `@<index>`)
+- Verify date range - asset may not have data for requested period
+- HYPE spot launched ~Nov 2024, no data before that
+
+### Price fetcher: Rate limited (429)
+Script handles this automatically with 5s retry. If persistent, increase sleep between assets:
+```python
+await asyncio.sleep(2)  # Increase from 0.5
+```
+
+### Price fetcher: Missing aiohttp/pyarrow
+```bash
+pip install aiohttp pyarrow
+```
