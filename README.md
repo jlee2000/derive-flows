@@ -1,6 +1,6 @@
 # Derive Options Flow Signal Analysis
 
-**TL;DR:** We tested whether unusual OTM options flow from Derive predicts future spot returns. ETH unusual call flow shows a statistically significant contrarian signal (bearish 72h, p=0.016), but after correcting for signal clustering, the 95% confidence interval includes zero—meaning the signal is **not reliably tradeable**.
+**TL;DR:** We tested whether unusual OTM options flow from Derive predicts future spot returns. ETH unusual call flow shows a statistically significant contrarian signal (bearish 72h, p=0.016), but after correcting for signal clustering, the 95% confidence interval includes zero—meaning the signal is **not reliably tradeable**. Note: sample period coincided with a -25% ETH drawdown; signal requires out-of-sample validation.
 
 ## Hypothesis
 
@@ -82,7 +82,7 @@ Statistically significant results (p < 0.05):
 |--------|-----|-----------|
 | Signals | 31 | 11 windows |
 | Overlap | - | 64.5% |
-| Mean return | 2.83% | 1.60% |
+| Short P&L | +2.83% | +1.60% |
 | Sharpe (annualized) | 7.12 | 2.99 |
 | 95% CI | - | [-2.62, 11.43] |
 
@@ -110,12 +110,12 @@ Statistically significant results (p < 0.05):
 
 ## Limitations
 
-1. **No aggressor side data:** Cannot distinguish buyer vs seller initiated trades
-2. **Short sample period:** 2 months, single market regime (Dec-Jan 2025-26)
-3. **Small sample after filtering:** 31 ETH call signals → 11 independent windows
-4. **Asset coverage:** BTC and HYPE have insufficient signals for robust inference
-5. **No order book context:** Strike selection may be liquidity-driven, not directional
-6. **Bear market period:** ETH declined -25.46% during the analysis window. While the signal underperforms the random baseline (-2.83% vs -0.51%, p=0.01), this was a persistent downtrend. The finding may not generalize to bull markets or ranging conditions.
+1. **Bear market regime:** ETH declined -25.46% during the analysis window. While the signal underperforms the random baseline (-2.83% vs -0.51%, p=0.01), this was a persistent downtrend. **The finding may not generalize to bull markets or ranging conditions.**
+2. **No aggressor side data:** Cannot distinguish buyer vs seller initiated trades
+3. **Short sample period:** 2 months, single market regime (Dec-Jan 2025-26)
+4. **Small sample after filtering:** 31 ETH call signals → 11 independent windows
+5. **Asset coverage:** BTC and HYPE have insufficient signals for robust inference
+6. **No order book context:** Strike selection may be liquidity-driven, not directional
 
 ## Future Work
 
