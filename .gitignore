@@ -5,8 +5,8 @@
 
 # Data
 data/
+outputs/
 *.db
-*.csv
 
 # Python
 __pycache__/

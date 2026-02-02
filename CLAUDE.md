@@ -3,6 +3,7 @@
 This document provides instructions for running and modifying the derive-flows data pipeline, which consists of:
 1. **Trade Ingestion** - Fetch option trade messages from Telegram
 2. **Price Data** - Fetch historical OHLCV prices from Hyperliquid API
+3. **Allium Data** - Fetch market context (funding, OI) and liquidations from Allium API
 
 ## Quick Start: Historical Ingestion
 
@@ -117,18 +118,116 @@ prices = {
 
 ---
 
+## Quick Start: Allium Data (Market Context & Liquidations)
+
+Fetch market context (funding rates, open interest, premium) and liquidation events from Allium's Hyperliquid tables for conditional signal analysis.
+
+### Prerequisites
+
+1. **Allium API Key** - Request access at https://www.allium.so/
+2. **Python 3.10+** with pip
+3. **Dependencies:** `pip install aiohttp pyarrow pandas python-dotenv`
+
+### Setup
+
+Add your Allium API key to `.env`:
+```bash
+ALLIUM_API_KEY=your_allium_api_key
+```
+
+### Run Allium Fetchers
+
+```bash
+# Fetch market context (funding, OI, premium)
+python scripts/fetch_allium_context.py
+
+# Fetch liquidation events and aggressor flow
+python scripts/fetch_allium_liquidations.py
+```
+
+### Output
+
+```
+data/allium/
+├── market_context.parquet     # Hourly funding, OI, premium, mark price
+├── liquidations.parquet       # Individual liquidation events
+└── aggressor_flow.parquet     # Hourly net buy/sell flow
+```
+
+**market_context.parquet:**
+| Column | Type | Description |
+|--------|------|-------------|
+| `timestamp` | datetime64[ns, UTC] | Observation time |
+| `coin` | string | Asset symbol (ETH, BTC) |
+| `funding` | float64 | Funding rate |
+| `premium` | float64 | Premium to index |
+| `open_interest` | float64 | Open interest (USD) |
+| `mark_price` | float64 | Mark price |
+
+**liquidations.parquet:**
+| Column | Type | Description |
+|--------|------|-------------|
+| `timestamp` | datetime64[ns, UTC] | Liquidation time |
+| `coin` | string | Asset symbol |
+| `side` | string | sell (long liq) / buy (short liq) |
+| `usd_amount` | float64 | Liquidation size (USD) |
+| `execution_price` | float64 | Liquidation execution price |
+| `liquidated_user` | string | Liquidated address |
+| `liquidation_mark_price` | float64 | Mark price at liquidation |
+
+**aggressor_flow.parquet:**
+| Column | Type | Description |
+|--------|------|-------------|
+| `hour` | datetime64[ns, UTC] | Hour bucket |
+| `coin` | string | Asset symbol |
+| `buy_volume_usd` | float64 | Buy-side volume |
+| `sell_volume_usd` | float64 | Sell-side volume |
+| `net_flow_usd` | float64 | Net flow (buy - sell) |
+
+### Loading Allium Data
+
+```python
+import pandas as pd
+
+# Load market context
+context = pd.read_parquet("data/allium/market_context.parquet")
+
+# Load liquidations
+liquidations = pd.read_parquet("data/allium/liquidations.parquet")
+
+# Load aggressor flow
+aggressor = pd.read_parquet("data/allium/aggressor_flow.parquet")
+```
+
+### Running Conditional Analysis
+
+After fetching Allium data, run the conditional analysis script:
+
+```bash
+python scripts/conditional_analysis.py
+```
+
+This produces additional outputs in `outputs/`:
+- `unusual_trades_enriched.parquet` - Trades with Allium context attached
+- `funding_quintile_analysis.csv` - Returns by funding rate quintile
+- `oi_direction_analysis.csv` - Returns by OI change direction
+- `liquidation_prediction.csv` - Correlation with forward liquidations
+- `aggressor_confirmation.csv` - Returns by aggressor flow confirmation
+
+---
+
 ## Running the Full Pipeline
 
-To run both trade ingestion and price data fetching end-to-end:
+To run trade ingestion, price data, and Allium data fetching end-to-end:
 
 ```bash
 # 1. Install dependencies
 pip install -e ".[dev]"
-pip install aiohttp pyarrow
+pip install aiohttp pyarrow python-dotenv
 
-# 2. Configure Telegram credentials (see Quick Start: Historical Ingestion)
+# 2. Configure credentials (see Quick Start sections)
 cp .env.example .env
-# Edit .env with your credentials
+# Edit .env with your Telegram and Allium credentials
 
 # 3. Fetch trade messages (first run requires interactive auth)
 derive-flows fetch -v
@@ -136,30 +235,15 @@ derive-flows fetch -v
 # 4. Fetch price data
 python scripts/fetch_hyperliquid_prices.py
 
-# 5. Load and join data for analysis
-python -c "
-import asyncio
-import pandas as pd
-from derive_flows.storage import TradeStorage
-from derive_flows.enrichment import enrich_trades
-from pathlib import Path
+# 5. Fetch Allium data (requires API key)
+python scripts/fetch_allium_context.py
+python scripts/fetch_allium_liquidations.py
 
-async def main():
-    storage = TradeStorage(Path('./data/trades.db'))
-    trades = await storage.to_dataframe()
-    trades = enrich_trades(trades)
+# 6. Run unusual flow analysis
+python scripts/unusual_flow_analysis.py
 
-    prices = {
-        asset: pd.read_parquet(f'data/prices/{asset}_hourly_prices.parquet')
-        for asset in ['eth', 'btc', 'hype']
-    }
-
-    print(f'Trades: {len(trades)} rows')
-    for asset, df in prices.items():
-        print(f'{asset.upper()} prices: {len(df)} rows')
-
-asyncio.run(main())
-"
+# 7. Run conditional analysis with Allium data
+python scripts/conditional_analysis.py
 ```
 
 ---
@@ -182,15 +266,26 @@ src/derive_flows/
     └── realtime.py     # Live streaming
 
 scripts/
-└── fetch_hyperliquid_prices.py   # Price data fetcher
+├── fetch_hyperliquid_prices.py   # Price data fetcher
+├── fetch_allium_context.py       # Allium market context fetcher
+├── fetch_allium_liquidations.py  # Allium liquidation/aggressor fetcher
+├── unusual_flow_analysis.py      # Core unusual flow pipeline
+└── conditional_analysis.py       # Conditional analysis with Allium
 
 data/
 ├── trades.db           # SQLite trade database (gitignored)
 ├── telegram.session    # Telethon auth session (gitignored)
-└── prices/             # Parquet price files (gitignored)
-    ├── eth_hourly_prices.parquet
-    ├── btc_hourly_prices.parquet
-    └── hype_hourly_prices.parquet
+├── prices/             # Parquet price files (gitignored)
+│   ├── eth_hourly_prices.parquet
+│   ├── btc_hourly_prices.parquet
+│   └── hype_hourly_prices.parquet
+└── allium/             # Allium data files (gitignored)
+    ├── market_context.parquet
+    ├── liquidations.parquet
+    └── aggressor_flow.parquet
+
+docs/
+└── ALLIUM_PROPOSAL.md  # Allium API access proposal
 ```
 
 ### Data Flow: Trade Ingestion
@@ -229,6 +324,32 @@ fetch_hyperliquid_prices.py
        │
        ▼
    .parquet files     data/prices/{asset}_hourly_prices.parquet
+```
+
+### Data Flow: Allium Data
+
+```
+Allium API
+       │
+       ▼
+fetch_allium_context.py / fetch_allium_liquidations.py
+       │
+       ├─→ POST /api/v1/explorer/queries/run
+       │   (SQL queries against Hyperliquid tables)
+       │
+       ▼
+   pandas DataFrame
+       │
+       ▼
+   .parquet files     data/allium/*.parquet
+       │
+       ▼
+conditional_analysis.py
+       │
+       ├─→ Enrich unusual trades with funding, OI, liquidations
+       │
+       ▼
+   outputs/*.csv      Conditional analysis results
 ```
 
 ---
@@ -360,6 +481,66 @@ START_DATE = datetime(2025, 12, 4, 0, 0, tzinfo=timezone.utc)
 END_DATE = datetime(2026, 2, 3, 0, 0, tzinfo=timezone.utc)
 ```
 
+### 7. Allium Fetchers (scripts/fetch_allium_*.py)
+
+**Allium API endpoint:**
+```
+POST https://api.allium.so/api/v1/explorer/queries/run
+```
+
+**Authentication:**
+- Requires `X-API-Key` header with Allium API key
+- API key stored in `ALLIUM_API_KEY` environment variable
+
+**Tables used:**
+| Table | Purpose |
+|-------|---------|
+| `hyperliquid.raw.perpetual_market_asset_contexts` | Funding rates, OI, premium |
+| `hyperliquid.dex.trades` | Liquidations and aggressor flow |
+
+**Market context query:**
+```sql
+SELECT block_timestamp, coin, funding_rate, premium, open_interest, mark_price
+FROM hyperliquid.raw.perpetual_market_asset_contexts
+WHERE coin IN ('ETH', 'BTC')
+  AND block_timestamp >= '2025-12-04'
+  AND block_timestamp < '2026-02-03'
+```
+
+**Liquidations query:**
+```sql
+SELECT block_timestamp, coin, side, size_usd, liquidated_user, liquidation_mark_price
+FROM hyperliquid.dex.trades
+WHERE coin IN ('ETH', 'BTC')
+  AND liquidated_user IS NOT NULL
+```
+
+**Key decisions:**
+- SQL queries executed via Allium Explorer API
+- 30s retry backoff on rate limit (429)
+- Aggressor flow aggregated to hourly buckets
+- Net flow computed as buy_volume - sell_volume
+
+### 8. Conditional Analysis (scripts/conditional_analysis.py)
+
+**Enrichment fields added to unusual trades:**
+| Field | Source | Purpose |
+|-------|--------|---------|
+| `funding_rate` | Market context | Funding at signal time |
+| `oi_change_24h` | Market context | OI change in 24h before signal |
+| `forward_liq_24h` | Liquidations | Liquidation volume in 24h after signal |
+| `forward_liq_72h` | Liquidations | Liquidation volume in 72h after signal |
+| `aggressor_net_flow` | Aggressor flow | Net flow in ±1h window |
+| `funding_quintile` | Computed | Q1-Q5 bucket for funding rate |
+| `oi_rising` | Computed | Boolean: OI increased in 24h |
+| `aggressor_bullish` | Computed | Boolean: net flow > 0 |
+
+**Conditioning analyses:**
+1. **Funding quintile**: Stratify returns by funding rate quintile
+2. **OI direction**: Compare returns when OI rising vs falling
+3. **Liquidation prediction**: Correlate unusual score with forward liquidations
+4. **Aggressor confirmation**: Compare returns when perp flow confirms vs conflicts
+
 ---
 
 ## Common Modifications
@@ -447,6 +628,28 @@ tokens = resp.json()["tokens"]
 # Returns list of {"name": "HYPE", "index": 107, ...}
 ```
 
+### Changing Allium date range
+
+Modify `START_DATE` and `END_DATE` in the Allium fetch scripts:
+```python
+START_DATE = datetime(2025, 12, 4, 0, 0, tzinfo=timezone.utc)
+END_DATE = datetime(2026, 2, 3, 0, 0, tzinfo=timezone.utc)
+```
+
+### Adding assets to Allium fetchers
+
+Modify the `ASSETS` list in the fetch scripts:
+```python
+ASSETS = ["ETH", "BTC", "SOL"]  # Add new assets
+```
+
+### Adding new conditional analysis
+
+1. Add new conditioning function in `conditional_analysis.py`
+2. Add enrichment logic in `enrich_with_allium()`
+3. Add analysis function (e.g., `analyze_by_new_condition()`)
+4. Call from `main()` and add to `print_conditional_findings()`
+
 ---
 
 ## Testing
@@ -477,7 +680,13 @@ Test files:
 | `data/telegram.session` | Telethon auth session (gitignored) |
 | `data/trades.db` | SQLite trade database (gitignored) |
 | `data/prices/*.parquet` | Hourly price data (gitignored) |
+| `data/allium/*.parquet` | Allium data files (gitignored) |
 | `scripts/fetch_hyperliquid_prices.py` | Price data fetcher script |
+| `scripts/fetch_allium_context.py` | Allium market context fetcher |
+| `scripts/fetch_allium_liquidations.py` | Allium liquidation/aggressor fetcher |
+| `scripts/unusual_flow_analysis.py` | Core unusual flow analysis |
+| `scripts/conditional_analysis.py` | Conditional analysis with Allium |
+| `docs/ALLIUM_PROPOSAL.md` | Allium API access proposal |
 
 ---
 
@@ -510,3 +719,33 @@ await asyncio.sleep(2)  # Increase from 0.5
 ```bash
 pip install aiohttp pyarrow
 ```
+
+### Allium: "ALLIUM_API_KEY environment variable not set"
+Add your Allium API key to `.env`:
+```bash
+ALLIUM_API_KEY=your_api_key_here
+```
+
+### Allium: API error 401 (Unauthorized)
+- Verify API key is correct
+- Check API key has access to Hyperliquid tables
+- Request access at https://www.allium.so/
+
+### Allium: API error 429 (Rate limited)
+Script handles this automatically with 30s retry. If persistent, add longer delays between queries.
+
+### Allium: Empty data returned
+- Verify table names are correct (case-sensitive)
+- Check date range - data may not exist for requested period
+- Verify assets exist in the tables (ETH, BTC are primary)
+
+### Conditional analysis: "unusual_trades_with_returns.parquet not found"
+Run the base unusual flow analysis first:
+```bash
+python scripts/unusual_flow_analysis.py
+```
+
+### Conditional analysis: Low coverage for Allium fields
+- Check Allium data was fetched: `ls data/allium/`
+- Verify date ranges match between trades and Allium data
+- Some trades may fall outside Allium data coverage

@@ -1241,6 +1241,11 @@ async def main():
     unusual_with_returns = join_forward_prices(unusual_trades, prices)
     print(f"  {len(unusual_with_returns)} trades with complete forward price data")
 
+    # Save for use by conditional_analysis.py
+    if not unusual_with_returns.empty:
+        unusual_with_returns.to_parquet(output_dir / "unusual_trades_with_returns.parquet", index=False)
+        print(f"  Saved: unusual_trades_with_returns.parquet")
+
     # Step 6: Compute baseline returns
     print("\n[6/13] Computing baseline returns...")
     baseline = compute_baseline_returns(prices, n_samples=500)
